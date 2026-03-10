@@ -10,6 +10,7 @@ import userRoutes from './routes/users.js';
 import businessRoutes from './routes/businesses.js';
 import adminBusinessRoutes from './routes/admin/businesses.js';
 import adminConsumerRoutes from './routes/admin/consumers.js';
+import adminReviewRoutes from './routes/admin/reviews.js';
 import reviewRoutes from './routes/reviews.js';
 import categoryRoutes from './routes/categories.js';
 
@@ -60,6 +61,7 @@ app.use('/api/businesses', businessRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/admin/businesses', adminBusinessRoutes);
+app.use('/api/admin/businesses', adminReviewRoutes);
 app.use('/api/admin/consumers', adminConsumerRoutes);
 
 // 404 Handler

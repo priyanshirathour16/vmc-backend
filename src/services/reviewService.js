@@ -248,6 +248,174 @@ export const incrementConsumerReviewCount = async (userId) => {
 };
 
 /**
+ * Get all reviews for a business (admin view — includes unapproved, all statuses)
+ * Includes admin tracking columns: added_by_admin, admin_reviewer_id
+ */
+export const getReviewsForBusinessAdmin = async (businessId, filters = {}) => {
+  const {
+    rating = null,
+    sort_by = 'recent',
+    limit = 20,
+    offset = 0,
+    added_by_admin = null,
+  } = filters;
+
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 20));
+  const offsetNum = Math.max(0, parseInt(offset) || 0);
+
+  try {
+    let query = supabase
+      .from('reviews')
+      .select(`
+        id,
+        title,
+        content,
+        rating,
+        created_at,
+        updated_at,
+        helpful_count,
+        unhelpful_count,
+        media_urls,
+        experience_date,
+        is_approved,
+        is_flagged,
+        added_by_admin,
+        admin_reviewer_id,
+        reviewer:reviewer_id (
+          id,
+          name,
+          email
+        ),
+        admin_user:admin_reviewer_id (
+          id,
+          name
+        ),
+        review_responses (
+          id,
+          response_text,
+          created_at
+        )
+      `, { count: 'exact' })
+      .eq('business_id', businessId);
+
+    if (rating && [1, 2, 3, 4, 5].includes(parseInt(rating))) {
+      query = query.eq('rating', parseInt(rating));
+    }
+
+    if (added_by_admin !== null) {
+      query = query.eq('added_by_admin', added_by_admin === 'true' || added_by_admin === true);
+    }
+
+    if (sort_by === 'rating_high') {
+      query = query.order('rating', { ascending: false });
+    } else if (sort_by === 'rating_low') {
+      query = query.order('rating', { ascending: true });
+    } else {
+      query = query.order('created_at', { ascending: false });
+    }
+
+    query = query.range(offsetNum, offsetNum + limitNum - 1);
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      throw new AppError(`Failed to fetch reviews: ${error.message}`, 500);
+    }
+
+    return {
+      reviews: data || [],
+      total: count || 0,
+      limit: limitNum,
+      offset: offsetNum,
+      hasMore: offsetNum + limitNum < (count || 0),
+    };
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError(`Error fetching reviews: ${error.message}`, 500);
+  }
+};
+
+/**
+ * Create a review on behalf of a consumer (Admin only)
+ * Sets added_by_admin=true, admin_reviewer_id=adminId, reviewer_id=consumerId
+ */
+export const createReviewAsAdmin = async (reviewData, consumerId, adminId) => {
+  const { error: validationError, value } = createReviewSchema.validate(reviewData);
+  if (validationError) {
+    throw new AppError(validationError.details[0].message, 400);
+  }
+
+  const { business_id, title, content, rating, experience_date, media_urls } = value;
+
+  try {
+    // Validate business exists and is accessible
+    const { data: business, error: businessError } = await supabase
+      .from('profile_business_owner')
+      .select('id, is_published, is_approved, avg_rating, total_reviews')
+      .eq('id', business_id)
+      .single();
+
+    if (businessError || !business) {
+      throw new AppError('Business not found', 404);
+    }
+
+    // Validate consumer exists and is active
+    const { data: consumer, error: consumerError } = await supabase
+      .from('users')
+      .select('id, role, is_active')
+      .eq('id', consumerId)
+      .single();
+
+    if (consumerError || !consumer) {
+      throw new AppError('Selected consumer not found', 404);
+    }
+
+    if (consumer.role !== 'consumer') {
+      throw new AppError('Selected user is not a consumer', 400);
+    }
+
+    if (consumer.is_active === false) {
+      throw new AppError('Selected consumer account is not active', 400);
+    }
+
+    // Insert review with admin tracking
+    const { data: newReview, error: insertError } = await supabase
+      .from('reviews')
+      .insert({
+        business_id,
+        reviewer_id: consumerId,
+        title,
+        content,
+        rating,
+        experience_date: experience_date || null,
+        media_urls: media_urls || [],
+        is_approved: true,
+        helpful_count: 0,
+        unhelpful_count: 0,
+        added_by_admin: true,
+        admin_reviewer_id: adminId,
+      })
+      .select('id, business_id, reviewer_id, rating, title, content, created_at, added_by_admin, admin_reviewer_id')
+      .single();
+
+    if (insertError) {
+      throw new AppError(`Failed to create review: ${insertError.message}`, 500);
+    }
+
+    // Update business metrics
+    await updateBusinessMetrics(business_id);
+
+    // Increment consumer review count
+    await incrementConsumerReviewCount(consumerId);
+
+    return newReview;
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError(`Error creating review: ${error.message}`, 500);
+  }
+};
+
+/**
  * Get rating distribution for a business (count of reviews per star rating)
  */
 export const getRatingDistribution = async (businessId) => {

@@ -106,7 +106,8 @@ export const getAllBusinessesAdmin = async (filters = {}) => {
       admin_created_by,
       created_at,
       updated_at,
-      avg_rating
+      avg_rating,
+      total_reviews
     `;
 
     // Build base query with count option
