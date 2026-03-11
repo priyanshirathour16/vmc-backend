@@ -1,7 +1,7 @@
 import express from 'express';
 import { asyncHandler } from '../middleware/errorHandler.js';
 import { authMiddleware } from '../middleware/auth.js';
-import { getPublishedBusinesses, getPublicBusinessDetail } from '../services/businessService.js';
+import { getPublishedBusinesses, getPublicBusinessDetail, applyBusinessRegistration } from '../services/businessService.js';
 
 const router = express.Router();
 
@@ -51,6 +51,30 @@ router.get('/', asyncHandler(async (req, res) => {
 router.get('/:id', asyncHandler(async (req, res) => {
   const result = await getPublicBusinessDetail(req.params.id);
   res.json(result);
+}));
+
+/**
+ * @POST /api/businesses/apply
+ * Public endpoint — business owner self-registers from the main website.
+ *
+ * Creates:
+ *  1. A user account with role 'business_owner'
+ *  2. A pending business profile (verification_status: 'pending', is_published: false)
+ *
+ * Body:
+ *  owner_name, owner_email, owner_password
+ *  business_name, business_category (UUID), website_url, phone_number,
+ *  email_business, business_description, business_logo_url,
+ *  street_address, city, state_province, postal_code, country
+ */
+router.post('/apply', asyncHandler(async (req, res) => {
+  const result = await applyBusinessRegistration(req.body);
+
+  res.status(201).json({
+    status: 'success',
+    message: 'Business registration submitted successfully. Our team will review it shortly.',
+    data: result,
+  });
 }));
 
 /**

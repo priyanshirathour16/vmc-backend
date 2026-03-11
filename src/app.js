@@ -41,13 +41,26 @@ app.use(requestLogger);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
-// Middleware: Rate Limiting (global)
+// Middleware: Rate Limiting
+// Global limiter — applied to all routes as a baseline
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.',
+  max: 500,                  // raised from 100 → 500; admin panel is a trusted internal tool
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { status: 'error', message: 'Too many requests. Please slow down and try again.' },
+  skip: (req) => req.ip === '127.0.0.1' || req.ip === '::1', // skip localhost in dev
 });
 app.use(limiter);
+
+// Auth limiter — stricter limit on login/register to prevent brute-force
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { status: 'error', message: 'Too many auth attempts. Please try again later.' },
+});
 
 // Health Check
 app.get('/health', (req, res) => {
@@ -55,7 +68,7 @@ app.get('/health', (req, res) => {
 });
 
 // API Routes
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', authLimiter, authRoutes); // stricter auth limiter
 app.use('/api/users', userRoutes);
 app.use('/api/businesses', businessRoutes);
 app.use('/api/reviews', reviewRoutes);

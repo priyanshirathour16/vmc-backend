@@ -1,6 +1,8 @@
 import Joi from 'joi';
+import bcrypt from 'bcryptjs';
 import { supabase } from '../config/db.js';
 import { AppError } from '../middleware/errorHandler.js';
+import { generateToken } from '../middleware/auth.js';
 
 /**
  * Validation Schemas for Business Management
@@ -353,6 +355,8 @@ export const verifyBusiness = async (businessId, verificationStatus, adminId) =>
     const payload = {
       verification_status: verificationStatus,
       is_verified: verificationStatus === 'verified',
+      is_approved: verificationStatus === 'verified', // ← FIX: Also set is_approved when verified
+      verification_date: verificationStatus === 'verified' ? new Date().toISOString() : null,
     };
 
     const { data, error } = await supabase
@@ -530,7 +534,7 @@ export const getPublishedBusinesses = async (filters = {}) => {
       .from('profile_business_owner')
       .select('id', { count: 'exact' })
       .eq('is_published', true)
-      .eq('is_approved', true);
+      .eq('is_verified', true);  // ← FIX: Check is_verified (actual status) not is_approved (legacy)
 
     // Apply filters to countQuery
     if (minRating > 0) {
@@ -565,10 +569,11 @@ export const getPublishedBusinesses = async (filters = {}) => {
         is_verified,
         city,
         country,
-        business_logo_url
+        business_logo_url,
+        opening_hours
       `)
       .eq('is_published', true)
-      .eq('is_approved', true);
+      .eq('is_verified', true);  // ← FIX: Check is_verified (actual status) not is_approved (legacy)
 
     // Apply filters to data query
     if (minRating > 0) {
@@ -678,7 +683,7 @@ export const getPublicBusinessDetail = async (businessId) => {
       `)
       .eq('id', businessId)
       .eq('is_published', true)
-      .eq('is_approved', true)
+      .eq('is_verified', true)
       .single();
 
     if (bizError) {
@@ -792,6 +797,162 @@ export const getPublicBusinessDetail = async (businessId) => {
   }
 };
 
+/**
+ * Validation schema for owner-initiated business application
+ */
+const applyBusinessSchema = Joi.object({
+  // Owner account info
+  owner_name: Joi.string().min(2).max(150).required(),
+  owner_email: Joi.string().email().required(),
+  owner_password: Joi.string().min(8).required(),
+
+  // Business details
+  business_name: Joi.string().min(3).max(150).required(),
+  business_category: Joi.string().uuid().required(),
+  website_url: Joi.string().uri().required(),
+  phone_number: Joi.string().pattern(/^[\d\s\-\+\(\)]{10,}$/).required(),
+  email_business: Joi.string().email().optional().allow(''),
+  business_description: Joi.string().min(20).max(1000).required(),
+  business_logo_url: Joi.string().uri().optional().allow(''),
+
+  // Location
+  street_address: Joi.string().min(5).max(255).required(),
+  city: Joi.string().min(2).max(100).required(),
+  state_province: Joi.string().min(2).max(100).optional().allow(''),
+  postal_code: Joi.string().max(20).optional().allow(''),
+  country: Joi.string().min(2).max(100).required(),
+
+  opening_hours: Joi.object().optional(),
+});
+
+/**
+ * Apply for business registration (Owner from main website)
+ *
+ * Creates a new user (business_owner role) + pending business profile in one
+ * atomic-style transaction. The business starts as:
+ *  - verification_status: 'pending'
+ *  - is_published: false
+ *  - is_approved: false
+ *
+ * Admin must approve before the business appears on the public listing.
+ */
+export const applyBusinessRegistration = async (data) => {
+  const { error: validationError, value } = applyBusinessSchema.validate(data);
+  if (validationError) {
+    throw new AppError(validationError.details[0].message, 400);
+  }
+
+  const {
+    owner_name,
+    owner_email,
+    owner_password,
+    business_name,
+    business_category,
+    website_url,
+    phone_number,
+    email_business,
+    business_description,
+    business_logo_url,
+    street_address,
+    city,
+    state_province,
+    postal_code,
+    country,
+    opening_hours,
+  } = value;
+
+  // Check email uniqueness
+  const { data: existingUser } = await supabase
+    .from('users')
+    .select('id')
+    .eq('email', owner_email)
+    .single();
+
+  if (existingUser) {
+    throw new AppError('An account with this email already exists', 409);
+  }
+
+  // Hash password
+  const passwordHash = await bcrypt.hash(owner_password, 10);
+
+  // Create user with business_owner role
+  const { data: newUser, error: userError } = await supabase
+    .from('users')
+    .insert([{
+      email: owner_email,
+      password_hash: passwordHash,
+      name: owner_name,
+      role: 'business_owner',
+      is_active: true,
+      verified_email: false,
+    }])
+    .select()
+    .single();
+
+  if (userError) {
+    throw new AppError(`Failed to create account: ${userError.message}`, 500);
+  }
+
+  // Create pending business profile linked to the new user
+  const businessPayload = {
+    user_id: newUser.id,
+    business_name,
+    business_category,
+    website_url,
+    phone_number,
+    email_business: email_business || null,
+    business_description,
+    business_logo_url: business_logo_url || null,
+    street_address,
+    city,
+    state_province: state_province || null,
+    postal_code: postal_code || null,
+    country,
+    opening_hours: opening_hours || null,
+    // owner-submitted — awaits admin review
+    created_by_type: 'owner',
+    verification_status: 'pending',
+    is_verified: false,
+    is_approved: false,
+    is_published: false,
+    subscription_tier: 'free',
+    subscription_status: 'active',
+  };
+
+  const { data: newBusiness, error: businessError } = await supabase
+    .from('profile_business_owner')
+    .insert([businessPayload])
+    .select()
+    .single();
+
+  if (businessError) {
+    // Roll back user creation so we don't leave orphan accounts
+    await supabase.from('users').delete().eq('id', newUser.id);
+    throw new AppError(`Failed to submit business registration: ${businessError.message}`, 500);
+  }
+
+  // Issue tokens so the owner is immediately logged in
+  const accessToken = generateToken(newUser.id, 'business_owner');
+  const refreshToken = generateToken(newUser.id, 'business_owner', '7d');
+
+  return {
+    user: {
+      id: newUser.id,
+      email: newUser.email,
+      name: newUser.name,
+      role: newUser.role,
+    },
+    business: {
+      id: newBusiness.id,
+      business_name: newBusiness.business_name,
+      verification_status: newBusiness.verification_status,
+      is_published: newBusiness.is_published,
+    },
+    accessToken,
+    refreshToken,
+  };
+};
+
 export default {
   getAllBusinessesAdmin,
   getBusinessById,
@@ -806,4 +967,5 @@ export default {
   // Public APIs
   getPublishedBusinesses,
   getPublicBusinessDetail,
+  applyBusinessRegistration,
 };
