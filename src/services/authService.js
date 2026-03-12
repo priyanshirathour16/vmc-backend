@@ -6,6 +6,7 @@ import { supabase } from '../config/db.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { generateToken } from '../middleware/auth.js';
 import config from '../config/env.js';
+import { sendPasswordResetEmail } from './emailService.js';
 
 /**
  * Validation Schemas
@@ -557,4 +558,122 @@ export const createConsumerAsAdmin = async (consumerData, adminId) => {
     profile,
     temporaryPassword: password ? undefined : finalPassword // If auto-generated, return it
   };
+};
+
+// ─── Password Reset ───────────────────────────────────────────────────────────
+
+/**
+ * Initiate a password reset flow.
+ * Looks up the user by email, generates a single-use token, stores it in the
+ * password_reset_tokens table, then dispatches a reset email via Zepto Mail.
+ *
+ * Security: always returns the same message whether the email exists or not
+ * (prevents email enumeration).
+ *
+ * @param {string} email
+ */
+export const forgotPassword = async (email) => {
+  const emailLower = (email || '').trim().toLowerCase();
+  if (!emailLower) throw new AppError('Email is required', 400);
+
+  // Look up user – don't reveal result to caller
+  const { data: user } = await supabase
+    .from('users')
+    .select('id, email, name, is_active')
+    .eq('email', emailLower)
+    .single();
+
+  const genericMessage = 'If an account with that email exists, a password reset link has been sent.';
+
+  // Silently exit if no account or inactive – no enumeration
+  if (!user || !user.is_active) {
+    return { message: genericMessage };
+  }
+
+  // Invalidate any previous unused tokens for this user
+  await supabase
+    .from('password_reset_tokens')
+    .update({ used: true })
+    .eq('user_id', user.id)
+    .eq('used', false);
+
+  // Generate cryptographically secure random token
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+
+  // Persist token
+  const { error: insertError } = await supabase
+    .from('password_reset_tokens')
+    .insert([{ user_id: user.id, token: rawToken, expires_at: expiresAt, used: false }]);
+
+  if (insertError) {
+    throw new AppError('Failed to initiate password reset', 500);
+  }
+
+  // Send email (if it fails, clean up the token and surface a user-friendly error)
+  try {
+    await sendPasswordResetEmail(user.email, user.name, rawToken);
+  } catch (emailErr) {
+    console.error('[forgotPassword] Email dispatch failed:', emailErr.message);
+    await supabase.from('password_reset_tokens').delete().eq('token', rawToken);
+    throw new AppError('Failed to send reset email. Please try again later.', 503);
+  }
+
+  return { message: genericMessage };
+};
+
+/**
+ * Complete the password reset flow.
+ * Validates the token, updates the user's password, then invalidates the token.
+ *
+ * @param {string} token        Raw reset token from the URL
+ * @param {string} newPassword  Plain-text new password (min 8 chars)
+ */
+export const resetPassword = async (token, newPassword) => {
+  if (!token || typeof token !== 'string' || token.length < 16) {
+    throw new AppError('Invalid reset token', 400);
+  }
+  if (!newPassword || newPassword.length < 8) {
+    throw new AppError('Password must be at least 8 characters', 400);
+  }
+
+  // Look up token record
+  const { data: tokenRecord } = await supabase
+    .from('password_reset_tokens')
+    .select('id, user_id, expires_at, used')
+    .eq('token', token)
+    .single();
+
+  if (!tokenRecord) {
+    throw new AppError('Invalid or expired reset link. Please request a new one.', 400);
+  }
+
+  if (tokenRecord.used) {
+    throw new AppError('This reset link has already been used. Please request a new one.', 400);
+  }
+
+  if (new Date(tokenRecord.expires_at) < new Date()) {
+    throw new AppError('This reset link has expired. Please request a new one.', 400);
+  }
+
+  // Hash the new password
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+
+  // Update user record
+  const { error: updateError } = await supabase
+    .from('users')
+    .update({ password_hash: passwordHash })
+    .eq('id', tokenRecord.user_id);
+
+  if (updateError) {
+    throw new AppError('Failed to update password', 500);
+  }
+
+  // Mark token as consumed (single-use)
+  await supabase
+    .from('password_reset_tokens')
+    .update({ used: true })
+    .eq('id', tokenRecord.id);
+
+  return { message: 'Password updated successfully. You can now log in with your new password.' };
 };

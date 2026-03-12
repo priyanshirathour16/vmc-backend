@@ -7,7 +7,9 @@ import {
   adminLogin,
   logoutUser,
   refreshAccessToken,
-  getUserProfile
+  getUserProfile,
+  forgotPassword,
+  resetPassword
 } from '../services/authService.js';
 
 const router = express.Router();
@@ -107,6 +109,46 @@ router.get('/me', authMiddleware, asyncHandler(async (req, res) => {
     status: 'success',
     message: 'User profile retrieved',
     data: user
+  });
+}));
+
+/**
+ * @POST /api/auth/forgot-password
+ * Request a password reset email.
+ * Body: { email }
+ * Returns a generic success message whether or not the email exists (anti-enumeration).
+ */
+router.post('/forgot-password', asyncHandler(async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    throw new AppError('Email is required', 400);
+  }
+
+  const result = await forgotPassword(email);
+
+  res.json({
+    status: 'success',
+    message: result.message
+  });
+}));
+
+/**
+ * @POST /api/auth/reset-password
+ * Complete a password reset using the token from the email link.
+ * Body: { token, newPassword }
+ */
+router.post('/reset-password', asyncHandler(async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  if (!token) throw new AppError('Reset token is required', 400);
+  if (!newPassword) throw new AppError('New password is required', 400);
+
+  const result = await resetPassword(token, newPassword);
+
+  res.json({
+    status: 'success',
+    message: result.message
   });
 }));
 
