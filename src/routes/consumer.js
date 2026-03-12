@@ -242,4 +242,201 @@ router.post('/change-password', asyncHandler(async (req, res) => {
   res.json({ status: 'success', message: 'Password changed successfully' });
 }));
 
+/**
+ * @GET /api/consumer/reviews
+ * List all reviews written by the current consumer with filters, sorting, and pagination.
+ * Query params:
+ *   - status: 'all' | 'approved' | 'pending' (default: 'all')
+ *   - sort_by: 'date' | 'rating' (default: 'date')
+ *   - order: 'asc' | 'desc' (default: 'desc')
+ *   - limit: number (default: 20, max: 50)
+ *   - offset: number (default: 0)
+ */
+router.get('/reviews', asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+  const {
+    status = 'all',
+    sort_by = 'date',
+    order = 'desc',
+    limit = 20,
+    offset = 0,
+  } = req.query;
+
+  const limitNum = Math.min(50, Math.max(1, parseInt(limit) || 20));
+  const offsetNum = Math.max(0, parseInt(offset) || 0);
+  const ascending = order === 'asc';
+
+  let query = supabase
+    .from('reviews')
+    .select(
+      'id, title, content, rating, is_approved, helpful_count, unhelpful_count, created_at, updated_at, experience_date, business_id',
+      { count: 'exact' }
+    )
+    .eq('reviewer_id', userId);
+
+  if (status === 'approved') query = query.eq('is_approved', true);
+  else if (status === 'pending') query = query.eq('is_approved', false);
+
+  if (sort_by === 'rating') query = query.order('rating', { ascending });
+  else query = query.order('created_at', { ascending });
+
+  query = query.range(offsetNum, offsetNum + limitNum - 1);
+
+  const { data: reviews, error, count } = await query;
+  if (error) throw new AppError(`Failed to fetch reviews: ${error.message}`, 500);
+
+  const allReviews = reviews || [];
+
+  // Fetch business names via separate query (avoids schema cache join issues)
+  const businessIds = [...new Set(allReviews.map(r => r.business_id).filter(Boolean))];
+  let businessMap = {};
+  if (businessIds.length > 0) {
+    const { data: businesses } = await supabase
+      .from('profile_business_owner')
+      .select('id, business_name, city')
+      .in('id', businessIds);
+    if (businesses) businesses.forEach(b => { businessMap[b.id] = b; });
+  }
+
+  const result = allReviews.map(r => ({ ...r, business: businessMap[r.business_id] ?? null }));
+
+  res.json({
+    status: 'success',
+    data: result,
+    pagination: {
+      limit: limitNum,
+      offset: offsetNum,
+      total: count || 0,
+      hasMore: offsetNum + limitNum < (count || 0),
+    },
+  });
+}));
+
+/**
+ * @PUT /api/consumer/reviews/:reviewId
+ * Update a consumer's own review.
+ * Body: { title, content, rating, experience_date }
+ */
+router.put('/reviews/:reviewId', asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+  const { reviewId } = req.params;
+  const { title, content, rating, experience_date } = req.body;
+
+  // Verify the review exists and belongs to this user
+  const { data: existing, error: fetchErr } = await supabase
+    .from('reviews')
+    .select('id, reviewer_id')
+    .eq('id', reviewId)
+    .single();
+
+  if (fetchErr || !existing) throw new AppError('Review not found', 404);
+  if (existing.reviewer_id !== userId) throw new AppError('You can only edit your own reviews', 403);
+
+  // Validate inputs
+  if (rating !== undefined && (parseInt(rating) < 1 || parseInt(rating) > 5)) {
+    throw new AppError('Rating must be between 1 and 5', 400);
+  }
+  if (title !== undefined && title.trim().length < 5) {
+    throw new AppError('Title must be at least 5 characters', 400);
+  }
+  if (content !== undefined && content.trim().length < 10) {
+    throw new AppError('Review content must be at least 10 characters', 400);
+  }
+
+  const updatePayload = { updated_at: new Date().toISOString() };
+  if (title !== undefined) updatePayload.title = title.trim();
+  if (content !== undefined) updatePayload.content = content.trim();
+  if (rating !== undefined) updatePayload.rating = parseInt(rating);
+  if (experience_date !== undefined) updatePayload.experience_date = experience_date || null;
+
+  const { data: updated, error: updateErr } = await supabase
+    .from('reviews')
+    .update(updatePayload)
+    .eq('id', reviewId)
+    .select('id, title, content, rating, is_approved, helpful_count, created_at, updated_at, experience_date, business_id')
+    .single();
+
+  if (updateErr) throw new AppError(`Failed to update review: ${updateErr.message}`, 500);
+
+  // Recalculate business avg_rating after rating change
+  if (rating !== undefined && updated.business_id) {
+    try {
+      const { data: bizReviews } = await supabase
+        .from('reviews')
+        .select('rating')
+        .eq('business_id', updated.business_id)
+        .eq('is_approved', true);
+      const total = bizReviews?.length || 0;
+      const avg = total > 0 ? parseFloat((bizReviews.reduce((s, r) => s + r.rating, 0) / total).toFixed(2)) : null;
+      await supabase
+        .from('profile_business_owner')
+        .update({ total_reviews: total, avg_rating: avg, updated_at: new Date().toISOString() })
+        .eq('id', updated.business_id);
+    } catch (err) {
+      console.error('Error updating business metrics after review edit:', err);
+    }
+  }
+
+  res.json({ status: 'success', message: 'Review updated successfully', data: updated });
+}));
+
+/**
+ * @DELETE /api/consumer/reviews/:reviewId
+ * Delete a consumer's own review (all statuses).
+ */
+router.delete('/reviews/:reviewId', asyncHandler(async (req, res) => {
+  const userId = req.user.id;
+  const { reviewId } = req.params;
+
+  // Verify ownership
+  const { data: existing, error: fetchErr } = await supabase
+    .from('reviews')
+    .select('id, reviewer_id, business_id')
+    .eq('id', reviewId)
+    .single();
+
+  if (fetchErr || !existing) throw new AppError('Review not found', 404);
+  if (existing.reviewer_id !== userId) throw new AppError('You can only delete your own reviews', 403);
+
+  const businessId = existing.business_id;
+
+  const { error: deleteErr } = await supabase
+    .from('reviews')
+    .delete()
+    .eq('id', reviewId);
+
+  if (deleteErr) throw new AppError(`Failed to delete review: ${deleteErr.message}`, 500);
+
+  // Update business metrics
+  try {
+    const { data: remaining } = await supabase
+      .from('reviews')
+      .select('rating')
+      .eq('business_id', businessId)
+      .eq('is_approved', true);
+    const total = remaining?.length || 0;
+    const avg = total > 0 ? parseFloat((remaining.reduce((s, r) => s + r.rating, 0) / total).toFixed(2)) : null;
+    await supabase
+      .from('profile_business_owner')
+      .update({ total_reviews: total, avg_rating: avg, updated_at: new Date().toISOString() })
+      .eq('id', businessId);
+
+    // Decrement consumer total_reviews
+    const { data: profile } = await supabase
+      .from('profile_consumer')
+      .select('total_reviews')
+      .eq('user_id', userId)
+      .single();
+    const newCount = Math.max(0, (profile?.total_reviews || 0) - 1);
+    await supabase
+      .from('profile_consumer')
+      .update({ total_reviews: newCount, updated_at: new Date().toISOString() })
+      .eq('user_id', userId);
+  } catch (err) {
+    console.error('Error updating metrics after review deletion:', err);
+  }
+
+  res.json({ status: 'success', message: 'Review deleted successfully' });
+}));
+
 export default router;
