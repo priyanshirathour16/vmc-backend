@@ -6,7 +6,7 @@ import { supabase } from '../config/db.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { generateToken } from '../middleware/auth.js';
 import config from '../config/env.js';
-import { sendPasswordResetEmail } from './emailService.js';
+import { sendPasswordResetEmail, sendConsumerWelcomeEmail } from './emailService.js';
 
 /**
  * Validation Schemas
@@ -15,7 +15,11 @@ const registerSchema = Joi.object({
   email: Joi.string().email().required(),
   password: Joi.string().min(8).required(),
   name: Joi.string().min(2).required(),
-  role: Joi.string().valid('consumer', 'business_owner').default('consumer')
+  role: Joi.string().valid('consumer', 'business_owner').default('consumer'),
+  // Optional consumer profile fields
+  phone: Joi.string().pattern(/^[\d\s\-\+\(\)]{10,}$/).optional(),
+  location: Joi.string().max(255).optional(),
+  country: Joi.string().max(100).optional()
 });
 
 const loginSchema = Joi.object({
@@ -65,7 +69,7 @@ export const registerUser = async (userData) => {
     throw new AppError(error.details[0].message, 400);
   }
 
-  const { email, password, name, role } = value;
+  const { email, password, name, role, phone, location, country } = value;
 
   // Check if user already exists
   const { data: existingUser } = await supabase
@@ -109,6 +113,9 @@ export const registerUser = async (userData) => {
       .insert([
         {
           user_id: newUser.id,
+          phone: phone || null,
+          location: location || null,
+          country: country || null,
           show_profile: true,
           notification_email: true
         }
@@ -119,6 +126,9 @@ export const registerUser = async (userData) => {
       await supabase.from('users').delete().eq('id', newUser.id);
       throw new AppError('Failed to create user profile', 500);
     }
+
+    // Send welcome email to consumer (non-blocking)
+    sendConsumerWelcomeEmail(newUser.email, newUser.name);
   } else if (role === 'business_owner') {
     const { error: profileError } = await supabase
       .from('profile_business_owner')

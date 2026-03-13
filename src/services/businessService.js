@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { supabase } from '../config/db.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { generateToken } from '../middleware/auth.js';
+import { sendBusinessApprovedEmail, sendBusinessRejectedEmail } from './emailService.js';
 
 /**
  * Validation Schemas for Business Management
@@ -352,6 +353,27 @@ export const verifyBusiness = async (businessId, verificationStatus, adminId) =>
   }
 
   try {
+    // 1. Fetch business with owner details
+    const { data: businessData, error: fetchError } = await supabase
+      .from('profile_business_owner')
+      .select(`
+        id,
+        business_name,
+        user_id,
+        users:user_id(email, name)
+      `)
+      .eq('id', businessId)
+      .single();
+
+    if (fetchError || !businessData) {
+      throw new AppError('Business not found', 404);
+    }
+
+    const ownerEmail = businessData.users?.email;
+    const ownerName = businessData.users?.name;
+    const businessName = businessData.business_name;
+
+    // 2. Update verification status
     const payload = {
       verification_status: verificationStatus,
       is_verified: verificationStatus === 'verified',
@@ -372,7 +394,14 @@ export const verifyBusiness = async (businessId, verificationStatus, adminId) =>
       );
     }
 
-    // Log the action
+    // 3. Send email based on verification status (non-blocking)
+    if (verificationStatus === 'verified' && ownerEmail && ownerName) {
+      sendBusinessApprovedEmail(ownerEmail, ownerName, businessName);
+    } else if (verificationStatus === 'rejected' && ownerEmail && ownerName) {
+      sendBusinessRejectedEmail(ownerEmail, ownerName, businessName);
+    }
+
+    // 4. Log the action
     await logAdminAction(
       adminId,
       `business_${verificationStatus}`,
