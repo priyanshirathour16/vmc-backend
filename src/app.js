@@ -8,6 +8,7 @@ import rateLimit from 'express-rate-limit';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
 import businessRoutes from './routes/businesses.js';
+import businessOwnerRoutes from './routes/business.js';
 import adminBusinessRoutes from './routes/admin/businesses.js';
 import adminConsumerRoutes from './routes/admin/consumers.js';
 import adminReviewRoutes from './routes/admin/reviews.js';
@@ -78,6 +79,7 @@ app.use('/api/admin/businesses', adminBusinessRoutes);
 app.use('/api/admin/businesses', adminReviewRoutes);
 app.use('/api/admin/consumers', adminConsumerRoutes);
 app.use('/api/consumer', consumerRoutes);
+app.use('/api/business', businessOwnerRoutes);
 
 // 404 Handler
 app.use((req, res) => {

@@ -1,6 +1,7 @@
 import { supabase } from '../config/db.js';
 import { AppError } from '../middleware/errorHandler.js';
 import { createReviewSchema, updateReviewSchema } from '../validators/reviewSchema.js';
+import { sendNewReviewNotification, sendReviewApprovedNotification, sendReviewRejectedNotification } from './emailService.js';
 
 /**
  * Get all reviews for a business with filters and pagination
@@ -46,7 +47,8 @@ export const getReviewsForBusiness = async (businessId, filters = {}) => {
         )
       `, { count: 'exact' })
       .eq('business_id', businessId)
-      .eq('is_approved', true);
+      .eq('is_approved', true)
+      .eq('status', 'approved');
 
     // Apply rating filter
     if (rating && [1, 2, 3, 4, 5].includes(parseInt(rating))) {
@@ -153,7 +155,8 @@ export const createReview = async (reviewData, userId) => {
         rating,
         experience_date: experience_date || null,
         media_urls: media_urls || [],
-        is_approved: true, // Allow reviews from authenticated users by default
+        is_approved: false, // Start as pending - requires business owner approval
+        status: 'pending', // Approval workflow status
         helpful_count: 0,
         unhelpful_count: 0
       })
@@ -169,6 +172,25 @@ export const createReview = async (reviewData, userId) => {
 
     // Increment consumer total_reviews
     await incrementConsumerReviewCount(userId);
+
+    // Send email notification to business owner (non-blocking)
+    // Fetch full business and reviewer data for email
+    const { data: businessFull } = await supabase
+      .from('profile_business_owner')
+      .select('id, business_name, email_business')
+      .eq('id', business_id)
+      .single();
+
+    const { data: reviewerFull } = await supabase
+      .from('users')
+      .select('id, name, email')
+      .eq('id', userId)
+      .single();
+
+    if (businessFull && reviewerFull) {
+      // Non-blocking: email is sent in background
+      sendNewReviewNotification(newReview, businessFull, reviewerFull);
+    }
 
     return newReview;
   } catch (error) {
@@ -187,7 +209,8 @@ export const updateBusinessMetrics = async (businessId) => {
       .from('reviews')
       .select('rating')
       .eq('business_id', businessId)
-      .eq('is_approved', true);
+      .eq('is_approved', true)
+      .eq('status', 'approved');
 
     if (fetchError) {
       throw new AppError(`Failed to fetch reviews: ${fetchError.message}`, 500);
@@ -278,6 +301,7 @@ export const getReviewsForBusinessAdmin = async (businessId, filters = {}) => {
         media_urls,
         experience_date,
         is_approved,
+        status,
         is_flagged,
         added_by_admin,
         admin_reviewer_id,
@@ -390,6 +414,7 @@ export const createReviewAsAdmin = async (reviewData, consumerId, adminId) => {
         experience_date: experience_date || null,
         media_urls: media_urls || [],
         is_approved: true,
+        status: 'approved', // Admin-created reviews are auto-approved
         helpful_count: 0,
         unhelpful_count: 0,
         added_by_admin: true,
@@ -424,7 +449,8 @@ export const getRatingDistribution = async (businessId) => {
       .from('reviews')
       .select('rating')
       .eq('business_id', businessId)
-      .eq('is_approved', true);
+      .eq('is_approved', true)
+      .eq('status', 'approved');
 
     if (error) {
       throw new AppError(`Failed to fetch reviews: ${error.message}`, 500);

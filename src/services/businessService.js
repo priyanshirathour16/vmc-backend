@@ -953,6 +953,304 @@ export const applyBusinessRegistration = async (data) => {
   };
 };
 
+/**
+ * ============================================================================
+ * BUSINESS OWNER DASHBOARD FUNCTIONS
+ * ============================================================================
+ */
+
+/**
+ * @function getBusinessDashboard
+ * Get comprehensive dashboard data for a business owner
+ * 
+ * Returns:
+ * - Business profile info
+ * - Aggregated stats (total reviews, avg rating, views, response rate)
+ * - Rating distribution
+ * - Recent reviews with reviewer details
+ * 
+ * @param {string} userId - The business owner's user_id
+ * @returns {Object} Dashboard data structure
+ */
+export const getBusinessDashboard = async (userId) => {
+  // 1. Fetch business profile
+  const { data: business, error: businessError } = await supabase
+    .from('profile_business_owner')
+    .select(`
+      id,
+      user_id,
+      business_name,
+      business_logo_url,
+      city,
+      country,
+      verification_status,
+      is_published,
+      created_at,
+      business_category,
+      phone_number,
+      email_business,
+      website_url
+    `)
+    .eq('user_id', userId)
+    .single();
+
+  if (businessError || !business) {
+    throw new AppError('Business profile not found. This account may not be a business owner.', 404);
+  }
+
+  // 2. Fetch all reviews for this business
+  const { data: reviews, error: reviewError } = await supabase
+    .from('reviews')
+    .select(`
+      id,
+      reviewer_id,
+      title,
+      content,
+      rating,
+      helpful_count,
+      unhelpful_count,
+      created_at,
+      is_approved,
+      status,
+      reviewed_at,
+      reviewed_by,
+      rejection_reason,
+      business_id,
+      updated_at
+    `)
+    .eq('business_id', business.id)
+    .order('created_at', { ascending: false });
+
+  if (reviewError) {
+    throw new AppError(`Failed to fetch reviews: ${reviewError.message}`, 500);
+  }
+
+  const allReviews = reviews || [];
+
+  // 3. Fetch reviewer information (names, avatars)
+  const reviewerIds = [...new Set(allReviews.map(r => r.reviewer_id).filter(Boolean))];
+  let reviewerMap = {};
+  
+  if (reviewerIds.length > 0) {
+    const { data: reviewers } = await supabase
+      .from('users')
+      .select('id, name, avatar_url, email')
+      .in('id', reviewerIds);
+    
+    if (reviewers) {
+      reviewers.forEach(r => {
+        reviewerMap[r.id] = {
+          id: r.id,
+          name: r.name,
+          avatar_url: r.avatar_url,
+          email: r.email
+        };
+      });
+    }
+  }
+
+  // 4. Compute statistics from reviews
+  const totalReviews = allReviews.length;
+  const approvedReviews = allReviews.filter(r => r.is_approved).length;
+  const pendingReviews = allReviews.filter(r => !r.is_approved).length;
+  
+  const totalHelpful = allReviews.reduce((sum, r) => sum + (r.helpful_count || 0), 0);
+  const totalUnhelpful = allReviews.reduce((sum, r) => sum + (r.unhelpful_count || 0), 0);
+  
+  const avgRating = totalReviews > 0
+    ? parseFloat((allReviews.reduce((sum, r) => sum + (r.rating || 0), 0) / totalReviews).toFixed(2))
+    : 0;
+
+  // Rating distribution
+  const ratingDistribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  allReviews.forEach(r => {
+    if (r.rating >= 1 && r.rating <= 5) {
+      ratingDistribution[r.rating]++;
+    }
+  });
+
+  // Recent reviews (first 10) with reviewer info
+  const recentReviews = allReviews.slice(0, 10).map(r => ({
+    id: r.id,
+    reviewer_id: r.reviewer_id,
+    reviewer_name: reviewerMap[r.reviewer_id]?.name || 'Anonymous',
+    reviewer_avatar: reviewerMap[r.reviewer_id]?.avatar_url || null,
+    title: r.title || 'No title',
+    content: r.content || '',
+    rating: r.rating,
+    helpful_count: r.helpful_count || 0,
+    unhelpful_count: r.unhelpful_count || 0,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    is_approved: r.is_approved,
+    status: r.status || 'pending',
+    reviewed_at: r.reviewed_at || null,
+    reviewed_by: r.reviewed_by || null,
+    rejection_reason: r.rejection_reason || null
+  }));
+
+  // 5. Calculate response rate (if business has response tracking in future)
+  // For now, using a placeholder based on approved vs total
+  const responseRate = totalReviews > 0
+    ? Math.round((approvedReviews / totalReviews) * 100)
+    : 0;
+
+  // Return dashboard data
+  return {
+    business: {
+      id: business.id,
+      user_id: business.user_id,
+      business_name: business.business_name,
+      business_logo_url: business.business_logo_url,
+      city: business.city,
+      country: business.country,
+      verification_status: business.verification_status,
+      is_published: business.is_published,
+      created_at: business.created_at,
+      status: business.is_published ? 'Active' : (business.verification_status === 'pending' ? 'Pending' : 'Inactive')
+    },
+    stats: {
+      totalReviews,
+      approvedReviews,
+      pendingReviews,
+      avgRating,
+      totalHelpful,
+      totalUnhelpful,
+      responseRate,
+      ratingDistribution
+    },
+    recentReviews
+  };
+};
+
+/**
+ * @function getBusinessReviews
+ * Fetch reviews for a business with filtering and pagination
+ * 
+ * Supports:
+ * - Filtering by approval status, rating, date range
+ * - Sorting by date, rating, helpful count
+ * - Pagination
+ * 
+ * @param {string} businessId - The business ID
+ * @param {Object} filters - Filter options
+ * @returns {Object} Paginated reviews with metadata
+ */
+export const getBusinessReviews = async (businessId, filters = {}) => {
+  const {
+    status = 'all', // 'approved' | 'pending' | 'all'
+    rating = null, // filter by specific rating (1-5)
+    sort_by = 'created_at', // 'created_at' | 'rating' | 'helpful_count'
+    sort_order = 'desc', // 'asc' | 'desc'
+    limit = 20,
+    offset = 0,
+    search = '' // search in title or content
+  } = filters;
+
+  // Build base query
+  let query = supabase
+    .from('reviews')
+    .select(`
+      id,
+      reviewer_id,
+      title,
+      content,
+      rating,
+      helpful_count,
+      unhelpful_count,
+      created_at,
+      updated_at,
+      is_approved,
+      status,
+      reviewed_at,
+      reviewed_by,
+      rejection_reason,
+      business_id,
+      users!reviewer_id(
+        id,
+        name,
+        avatar_url,
+        email
+      )
+    `, { count: 'exact' })
+    .eq('business_id', businessId);
+
+  // Apply approval status filter
+  if (status === 'approved') {
+    query = query.eq('is_approved', true);
+  } else if (status === 'pending') {
+    query = query.eq('is_approved', false);
+  }
+
+  // Apply rating filter
+  if (rating && rating >= 1 && rating <= 5) {
+    query = query.eq('rating', parseInt(rating));
+  }
+
+  // Apply search filter (title or content)
+  if (search && search.trim()) {
+    query = query.or(`title.ilike.%${search}%,content.ilike.%${search}%`);
+  }
+
+  // Apply sorting
+  const validSortFields = ['created_at', 'rating', 'helpful_count'];
+  const sortField = validSortFields.includes(sort_by) ? sort_by : 'created_at';
+  const sortAsc = sort_order === 'asc';
+
+  query = query.order(sortField, { ascending: sortAsc });
+
+  // Apply pagination
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 20));
+  const offsetNum = Math.max(0, parseInt(offset) || 0);
+
+  query = query.range(offsetNum, offsetNum + limitNum - 1);
+
+  const { data: reviews, error, count } = await query;
+
+  if (error) {
+    throw new AppError(`Failed to fetch reviews: ${error.message}`, 500);
+  }
+
+  // Format reviews with reviewer info
+  const formattedReviews = (reviews || []).map(r => ({
+    id: r.id,
+    reviewer_id: r.reviewer_id,
+    reviewer_name: r.users?.name || 'Anonymous',
+    reviewer_avatar: r.users?.avatar_url || null,
+    reviewer_email: r.users?.email || null,
+    title: r.title || 'No title',
+    content: r.content || '',
+    rating: r.rating,
+    helpful_count: r.helpful_count || 0,
+    unhelpful_count: r.unhelpful_count || 0,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+    is_approved: r.is_approved,
+    status: r.status || 'pending',
+    reviewed_at: r.reviewed_at || null,
+    reviewed_by: r.reviewed_by || null,
+    rejection_reason: r.rejection_reason || null,
+    experience_date: r.experience_date || null
+  }));
+
+  return {
+    reviews: formattedReviews,
+    pagination: {
+      limit: limitNum,
+      offset: offsetNum,
+      total: count || 0,
+      pages: Math.ceil((count || 0) / limitNum)
+    },
+    filters: {
+      status,
+      rating,
+      sort_by: sortField,
+      sort_order: sortAsc ? 'asc' : 'desc',
+      search
+    }
+  };
+};
+
 export default {
   getAllBusinessesAdmin,
   getBusinessById,
@@ -968,4 +1266,7 @@ export default {
   getPublishedBusinesses,
   getPublicBusinessDetail,
   applyBusinessRegistration,
+  // Dashboard APIs
+  getBusinessDashboard,
+  getBusinessReviews,
 };
