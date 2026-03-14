@@ -2,6 +2,7 @@ import express from 'express';
 import { asyncHandler } from '../../middleware/errorHandler.js';
 import { authMiddleware, authorizeRole } from '../../middleware/auth.js';
 import { createConsumerAsAdmin } from '../../services/authService.js';
+import { sendAdminCreatedConsumerWelcomeEmail } from '../../services/emailService.js';
 import { supabase } from '../../config/db.js';
 import { AppError } from '../../middleware/errorHandler.js';
 
@@ -165,6 +166,15 @@ router.post(
   authorizeRole('admin'),
   asyncHandler(async (req, res) => {
     const consumer = await createConsumerAsAdmin(req.body, req.userId);
+
+    // Send welcome email non-blocking
+    if (consumer.user.email) {
+      sendAdminCreatedConsumerWelcomeEmail(
+        consumer.user.email,
+        consumer.user.name,
+        consumer.temporaryPassword  // May be undefined if admin provided password
+      );
+    }
 
     res.status(201).json({
       status: 'success',

@@ -1190,3 +1190,273 @@ export const sendBusinessRejectedEmail = (businessOwnerEmail, businessOwnerName,
     }
   });
 };
+
+/**
+ * Send welcome email to a consumer created by admin.
+ * This function is NON-BLOCKING and catches all errors internally.
+ * Differs from sendConsumerWelcomeEmail() by optionally including temporary password.
+ * 
+ * @param {string} toEmail                - Consumer email address
+ * @param {string} toName                 - Consumer display name
+ * @param {string|undefined} temporaryPassword - Auto-generated password (if applicable)
+ */
+export const sendAdminCreatedConsumerWelcomeEmail = (toEmail, toName, temporaryPassword = undefined) => {
+  // Execute asynchronously without blocking the main flow
+  setImmediate(async () => {
+    try {
+      if (!toEmail) {
+        console.warn('[emailService] No email provided for admin-created consumer welcome. Skipping.');
+        return;
+      }
+
+      const fromEmail = process.env.ZEPTO_MAIL_FROM_EMAIL || 'noreply@vmcreviews.com';
+      const fromName = process.env.ZEPTO_MAIL_FROM_NAME || 'VMC Reviews';
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const changePasswordLink = `${frontendUrl}/change-password?from=admin-welcome`;
+
+      const htmlBody = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Your VMC Reviews Account is Ready – Welcome!</title>
+</head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <!-- Card -->
+        <table width="560" cellpadding="0" cellspacing="0"
+          style="background:#ffffff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,0.07);overflow:hidden;">
+
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#06b6d4,#0891b2);padding:40px 40px;text-align:center;">
+              <p style="margin:0;font-size:28px;font-weight:700;color:#ffffff;letter-spacing:-0.5px;">
+                🎉 Welcome to VMC Reviews!
+              </p>
+              <p style="margin:12px 0 0;font-size:15px;color:rgba(255,255,255,0.9);">
+                Your account is ready to use
+              </p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:40px;">
+              <p style="margin:0 0 20px;font-size:15px;color:#1e293b;font-weight:600;">
+                Hi ${toName || 'there'},
+              </p>
+              
+              <p style="margin:0 0 24px;font-size:14px;color:#475569;line-height:1.7;">
+                We're excited to inform you that your account on <strong>VMC Reviews</strong> has been created and is ready to use! Start exploring businesses and sharing your honest reviews today.
+              </p>
+
+              <!-- Account Details Section (Conditional) -->
+              ${temporaryPassword ? `
+              <table width="100%" cellpadding="0" cellspacing="0"
+                style="background:#f0f9f7;border:2px solid #06b6d4;border-radius:12px;padding:24px;margin:0 0 24px;">
+                <tr>
+                  <td>
+                    <p style="margin:0 0 16px;font-size:14px;color:#1e293b;font-weight:600;">
+                      🔐 Your Account Details
+                    </p>
+                    <table width="100%" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td style="padding:10px 0;border-bottom:1px solid #a7f3d0;">
+                          <span style="font-size:13px;color:#475569;">Email Address</span>
+                          <span style="display:block;font-size:13px;font-weight:600;color:#1e293b;margin-top:4px;">${toEmail}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:10px 0;">
+                          <span style="font-size:13px;color:#475569;">Temporary Password</span>
+                          <span style="display:block;font-size:14px;font-weight:700;color:#06b6d4;margin-top:4px;font-family:monospace;letter-spacing:1px;">${temporaryPassword}</span>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <p style="margin:16px 0 0;padding:12px;background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;font-size:12px;color:#92400e;line-height:1.6;">
+                      <strong>⚠️ Important:</strong> This is a temporary password. Change it immediately after your first login for security. Use the "Change Password" link below.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Change Password CTA -->
+              <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;width:100%;">
+                <tr>
+                  <td align="center">
+                    <a href="${changePasswordLink}"
+                      style="display:inline-block;padding:12px 32px;font-size:13px;
+                             font-weight:700;color:#ffffff;text-decoration:none;
+                             background:#ef4444;border-radius:8px;letter-spacing:0.3px;">
+                      Change Password Now ✓
+                    </a>
+                  </td>
+                </tr>
+              </table>
+              ` : `
+              <table width="100%" cellpadding="0" cellspacing="0"
+                style="background:#fef3c7;border:1px solid #fcd34d;border-radius:12px;padding:16px;margin:0 0 24px;">
+                <tr>
+                  <td>
+                    <p style="margin:0;font-size:12px;color:#92400e;line-height:1.6;">
+                      <strong>💡 Note:</strong> Your admin has shared your password separately. If you haven't received it, please contact them.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+              `}
+
+              <!-- What You Can Do Section -->
+              <p style="margin:24px 0 16px;font-size:14px;color:#1e293b;font-weight:600;">
+                ✨ What You Can Do:
+              </p>
+
+              <table width="100%" cellpadding="0" cellspacing="0"
+                style="background:#f0f4f8;border:1px solid #cbd5e1;border-radius:12px;padding:20px;">
+                <tr>
+                  <td>
+                    <table width="100%" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td style="padding:10px 0;vertical-align:top;">
+                          <span style="font-size:16px;margin-right:10px;">📝</span>
+                        </td>
+                        <td style="padding:10px 0;font-size:13px;color:#475569;line-height:1.6;">
+                          <strong>Write Reviews</strong> – Share your honest experiences about businesses you've visited
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:10px 0;vertical-align:top;">
+                          <span style="font-size:16px;margin-right:10px;">⭐</span>
+                        </td>
+                        <td style="padding:10px 0;font-size:13px;color:#475569;line-height:1.6;">
+                          <strong>Rate Businesses</strong> – Give 1-5 star ratings for quick and easy feedback
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:10px 0;vertical-align:top;">
+                          <span style="font-size:16px;margin-right:10px;">🔍</span>
+                        </td>
+                        <td style="padding:10px 0;font-size:13px;color:#475569;line-height:1.6;">
+                          <strong>Discover Businesses</strong> – Browse thousands of verified businesses and read reviews
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:10px 0;vertical-align:top;">
+                          <span style="font-size:16px;margin-right:10px;">🏆</span>
+                        </td>
+                        <td style="padding:10px 0;font-size:13px;color:#475569;line-height:1.6;">
+                          <strong>Build Reputation</strong> – Earn badges and recognition as a trusted reviewer
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Getting Started -->
+              <p style="margin:24px 0 16px;font-size:14px;color:#1e293b;font-weight:600;">
+                🚀 Getting Started:
+              </p>
+              <ol style="margin:0 0 24px;padding-left:20px;font-size:13px;color:#475569;line-height:1.8;">
+                <li style="margin-bottom:8px;">Complete your profile to personalize your experience</li>
+                <li style="margin-bottom:8px;">Browse businesses using our search and filters</li>
+                <li style="margin-bottom:8px;">Click on any business to view details and reviews</li>
+                <li style="margin-bottom:8px;">Click "Write a Review" to share your experience</li>
+                <li>Your reviews will be published after business owner approval</li>
+              </ol>
+
+              <!-- CTA Button -->
+              <table cellpadding="0" cellspacing="0" style="margin:24px 0;width:100%;">
+                <tr>
+                  <td align="center">
+                    <a href="${frontendUrl}/consumer/dashboard"
+                      style="display:inline-block;padding:14px 40px;font-size:14px;
+                             font-weight:700;color:#ffffff;text-decoration:none;
+                             background:linear-gradient(135deg,#06b6d4,#0891b2);
+                             border-radius:10px;letter-spacing:0.3px;">
+                      Go to Your Dashboard →
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Community Guidelines -->
+              <table width="100%" cellpadding="0" cellspacing="0"
+                style="background:#fef3c7;border:1px solid #fcd34d;border-radius:12px;padding:16px;">
+                <tr>
+                  <td>
+                    <p style="margin:0;font-size:12px;color:#78350f;line-height:1.6;">
+                      <strong>💡 Community Guidelines:</strong> Reviews should be honest, respectful, and helpful. 
+                      No spam, hate speech, or promotional content. Businesses have the right to approve or reject reviews.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Support -->
+              <p style="margin:24px 0 0;font-size:14px;color:#475569;line-height:1.7;">
+                If you have any questions or need help getting started, our support team is here to assist you. Don't hesitate to reach out!
+              </p>
+
+              <p style="margin:8px 0 0;font-size:14px;color:#475569;">
+                Happy reviewing! 🌟
+              </p>
+
+              <p style="margin:8px 0 0;font-size:13px;color:#64748b;">
+                The VMC Reviews Team
+              </p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background:#f8fafc;padding:20px 40px;border-top:1px solid #e2e8f0;
+                       text-align:center;font-size:12px;color:#94a3b8;">
+              <p style="margin:0 0 4px;">
+                © ${new Date().getFullYear()} VMC Reviews. All rights reserved.
+              </p>
+              <p style="margin:0;color:#cbd5e1;">
+                Your account was created by an administrator. If you have questions, contact your admin.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+        <!-- /Card -->
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+      `.trim();
+
+      const payload = {
+        from: {
+          address: fromEmail,
+          name: fromName,
+        },
+        to: [
+          {
+            email_address: {
+              address: toEmail,
+              name: toName || toEmail.split('@')[0],
+            },
+          },
+        ],
+        subject: `Welcome to VMC Reviews, ${toName || 'Reviewer'}! Your Account is Ready 🎉`,
+        htmlbody: htmlBody,
+      };
+
+      const result = await sendViaZepto(payload);
+      console.log(`✅ [emailService] Admin-created consumer welcome sent to ${toEmail}:`, result.data?.request_id);
+
+    } catch (error) {
+      // Log error but never throw - non-blocking
+      console.error(`❌ [emailService] Failed to send admin-created consumer welcome:`, error.message);
+    }
+  });
+};
