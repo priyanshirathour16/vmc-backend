@@ -12,6 +12,7 @@ import businessOwnerRoutes from './routes/business.js';
 import adminBusinessRoutes from './routes/admin/businesses.js';
 import adminConsumerRoutes from './routes/admin/consumers.js';
 import adminReviewRoutes from './routes/admin/reviews.js';
+import adminDashboardRoutes from './routes/admin/dashboard.js';
 import reviewRoutes from './routes/reviews.js';
 import categoryRoutes from './routes/categories.js';
 import consumerRoutes from './routes/consumer.js';
@@ -78,6 +79,7 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/admin/businesses', adminBusinessRoutes);
 app.use('/api/admin/businesses', adminReviewRoutes);
 app.use('/api/admin/consumers', adminConsumerRoutes);
+app.use('/api/admin/dashboard', adminDashboardRoutes);
 app.use('/api/consumer', consumerRoutes);
 app.use('/api/business', businessOwnerRoutes);
 
