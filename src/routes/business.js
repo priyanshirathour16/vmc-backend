@@ -424,6 +424,84 @@ router.post(
 );
 
 /**
+ * @GET /api/business/reviews/velocity
+ * Get review counts grouped by time window:
+ * - thisWeek:   Mon 00:00 → now
+ * - lastWeek:   previous Mon 00:00 → previous Sun 23:59
+ * - thisMonth:  1st of current month 00:00 → now
+ * - lastMonth:  1st → last day of previous month
+ *
+ * Response: { thisWeek, lastWeek, thisMonth, lastMonth }
+ */
+router.get(
+  '/reviews/velocity',
+  asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+
+    // Get business ID
+    const { data: business, error: bizErr } = await supabase
+      .from('profile_business_owner')
+      .select('id')
+      .eq('user_id', userId)
+      .single();
+
+    if (bizErr || !business) {
+      return res.status(404).json({ status: 'error', message: 'Business profile not found' });
+    }
+
+    const now = new Date();
+
+    // ── This week: Monday 00:00 of current week → now
+    const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ...
+    const daysToMon = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    const thisWeekStart = new Date(now);
+    thisWeekStart.setDate(now.getDate() - daysToMon);
+    thisWeekStart.setHours(0, 0, 0, 0);
+
+    // ── Last week: previous Mon 00:00 → previous Sun 23:59:59
+    const lastWeekStart = new Date(thisWeekStart);
+    lastWeekStart.setDate(thisWeekStart.getDate() - 7);
+    const lastWeekEnd = new Date(thisWeekStart);
+    lastWeekEnd.setMilliseconds(-1);
+
+    // ── This month: 1st of current month 00:00 → now
+    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+
+    // ── Last month: 1st → last day of previous month
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
+    const lastMonthEnd = new Date(thisMonthStart);
+    lastMonthEnd.setMilliseconds(-1);
+
+    // Helper: count reviews in [from, to]
+    const countInRange = async (from, to) => {
+      const query = supabase
+        .from('reviews')
+        .select('id', { count: 'exact', head: true })
+        .eq('business_id', business.id)
+        .gte('created_at', from.toISOString());
+
+      if (to) query.lte('created_at', to.toISOString());
+
+      const { count, error } = await query;
+      if (error) return 0;
+      return count || 0;
+    };
+
+    const [thisWeek, lastWeek, thisMonth, lastMonth] = await Promise.all([
+      countInRange(thisWeekStart, null),
+      countInRange(lastWeekStart, lastWeekEnd),
+      countInRange(thisMonthStart, null),
+      countInRange(lastMonthStart, lastMonthEnd),
+    ]);
+
+    res.json({
+      status: 'success',
+      data: { thisWeek, lastWeek, thisMonth, lastMonth },
+    });
+  })
+);
+
+/**
  * @GET /api/business/reviews/pending/count
  * Get count of pending reviews (not yet approved)
  */
